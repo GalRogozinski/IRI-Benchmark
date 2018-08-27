@@ -2,7 +2,6 @@ package com.iota.iribenchmark;
 
 import com.iota.iri.conf.BaseIotaConfig;
 import com.iota.iri.controllers.TransactionViewModel;
-import com.iota.iri.model.Hash;
 import com.iota.iri.model.Transaction;
 import com.iota.iri.storage.Indexable;
 import com.iota.iri.storage.Persistable;
@@ -11,25 +10,26 @@ import com.iota.iri.storage.Tangle;
 import com.iota.iri.storage.rocksDB.RocksDBPersistenceProvider;
 import com.iota.iri.utils.Pair;
 import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.IOUtils;
 import org.openjdk.jmh.annotations.*;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+
 
 
 public class RocksDbBenchmark {
     @State(Scope.Benchmark)
     public static class PersistState {
+        @Param({"10", "100", "500", "1000", "3000"})
+        private int numOfTxsToTest;
+
         private final File dbFolder = new File("db-clean");
         private final File logFolder = new File("db-log-clean");
 
-        public static final int NUM_TXS = 1000;
-        Tangle tangle;
-        List<TransactionViewModel> transactions = new ArrayList<>(NUM_TXS);
+        private Tangle tangle;
+        private List<TransactionViewModel> transactions;
 
 
         @Setup(Level.Trial)
@@ -44,7 +44,9 @@ public class RocksDbBenchmark {
             tangle = new Tangle();
             tangle.addPersistenceProvider(dbProvider);
             String trytes = "";
-            for (int i = 0; i < NUM_TXS; i++) {
+            System.out.println("numOfTxsToTest = [" + numOfTxsToTest + "]");
+            transactions = new ArrayList<>(numOfTxsToTest);
+            for (int i = 0; i < numOfTxsToTest; i++) {
                 trytes = nextWord(trytes);
                 TransactionViewModel tvm = TransactionTestUtils.createTransactionWithTrytes(trytes);
                 transactions.add(tvm);
@@ -82,7 +84,7 @@ public class RocksDbBenchmark {
         }
     }
 
-//    @Benchmark
+    @Benchmark
     @BenchmarkMode(Mode.AverageTime)
     @OutputTimeUnit(TimeUnit.MILLISECONDS)
     @Fork(value = 1, warmups = 1)
@@ -96,12 +98,13 @@ public class RocksDbBenchmark {
 
     @State(Scope.Benchmark)
     public static class DeleteState {
-        public static final int NUM_TXS = 1000;
+        @Param({"10", "100", "500", "1000", "3000"})
+        private int numOfTxsToTest;
         private final File dbFolder = new File("db-full");
         private final File logFolder = new File("db-log-full");
         Tangle tangle;
-        List<Pair<Hash, TransactionViewModel>> transactions = new ArrayList<>(NUM_TXS);
-
+        List<TransactionViewModel> transactions = new ArrayList<>(numOfTxsToTest);
+        List<Pair<Indexable, ? extends Class<? extends Persistable>>> pairs = new ArrayList<>(numOfTxsToTest);
 
         @Setup(Level.Trial)
         public void setup() throws Exception {
@@ -115,10 +118,12 @@ public class RocksDbBenchmark {
             tangle = new Tangle();
             tangle.addPersistenceProvider(dbProvider);
             String trytes = "";
-            for (int i = 0; i < NUM_TXS; i++) {
+            System.out.println("numOfTxsToTest = [" + numOfTxsToTest + "]");
+            for (int i = 0; i < numOfTxsToTest; i++) {
                 trytes = nextWord(trytes);
                 TransactionViewModel tvm = TransactionTestUtils.createTransactionWithTrytes(trytes);
-                transactions.add(new Pair<>(tvm.getHash(), tvm));
+                transactions.add(tvm);
+                pairs.add(new Pair<>(tvm.getHash(), Transaction.class));
             }
         }
 
@@ -133,8 +138,8 @@ public class RocksDbBenchmark {
         @Setup(Level.Iteration)
         public void populateDb() throws Exception {
             System.out.println("-----------------------iteration setup--------------------------------");
-            for (Pair<Hash, TransactionViewModel> pairs : transactions) {
-                pairs.hi.store(tangle);
+            for (TransactionViewModel tvm : transactions) {
+                tvm.store(tangle);
             }
         }
 
@@ -168,8 +173,8 @@ public class RocksDbBenchmark {
     @Warmup(iterations = 5)
     @Measurement(iterations = 5)
     public void deleteOneByOne(DeleteState state) throws Exception {
-        for (Pair<Hash, TransactionViewModel> pair : state.transactions) {
-            pair.hi.delete(state.tangle);
+        for (TransactionViewModel tvm : state.transactions) {
+            tvm.delete(state.tangle);
         }
     }
 
@@ -184,16 +189,27 @@ public class RocksDbBenchmark {
         state.tangle.clearMetadata(Transaction.class);
     }
 
-//    @Benchmark
-//    @BenchmarkMode(Mode.AverageTime)
-//    @OutputTimeUnit(TimeUnit.MILLISECONDS)
-//    @Fork(value = 1, warmups = 1)
-//    @Warmup(iterations = 5)
-//    @Measurement(iterations = 5)
-//    public void deleteBatch(DeleteState state) throws Exception {
-//        List<Pair<Indexable, Persistable>> transactions = state.transactions;
-//        state.tangle.deleteBatch(transactions);
-//        }
-//    }
+    @Benchmark
+    @BenchmarkMode(Mode.AverageTime)
+    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+    @Fork(value = 1, warmups = 1)
+    @Warmup(iterations = 5)
+    @Measurement(iterations = 5)
+    public void deleteBatch(DeleteState state) throws Exception {
+        List<Pair<Indexable, ? extends Class<? extends Persistable>>> pairs = state.pairs;
+        state.tangle.deleteBatch(pairs);
+    }
+
+    @Benchmark
+    @BenchmarkMode(Mode.AverageTime)
+    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+    @Fork(value = 1, warmups = 1)
+    @Warmup(iterations = 5)
+    @Measurement(iterations = 5)
+    public void fetchBatch(DeleteState state) throws Exception {
+        for (Pair<Indexable, ? extends Class<? extends Persistable>> pair : state.pairs) {
+            state.tangle.load(pair.hi, pair.low);
+        }
+    }
 
 }
